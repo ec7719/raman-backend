@@ -6,6 +6,11 @@ from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
+#default open window
+@app.route('/')
+def index():
+    return "Hello, World!"
+
 
 def calculate_fwhm(x, y, peak):
     half_max = y[peak] / 2.0
