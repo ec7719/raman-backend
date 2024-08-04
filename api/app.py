@@ -5,6 +5,7 @@ from scipy.signal import find_peaks
 from scipy import signal
 from flask_cors import CORS
 import os
+import io
 
 app = Flask(__name__)
 CORS(app)
@@ -13,8 +14,9 @@ CORS(app)
 def index():
     return "Hello, World!"
 
-def smooth_data(x, y, threshold):
-    window_length = int(len(y) * threshold / 100)
+def smooth_data(x, y, window_length):
+    if window_length < 3:
+        window_length = 3
     if window_length % 2 == 0:
         window_length += 1
     return signal.savgol_filter(y, window_length, 2)
@@ -68,25 +70,31 @@ def detect_peaks():
     file = request.files['file']
     threshold = float(request.form.get('threshold', 0))
     
-    df = pd.read_csv(file, header=None)
+    # Read the CSV data from the file
+    file_content = file.read().decode('utf-8')
+    df = pd.read_csv(io.StringIO(file_content), header=None)
     
     wavelengths = df[0].to_numpy()
     intensities = df[1].to_numpy()
 
-    if threshold > 0:
-        intensities = smooth_data(wavelengths, intensities, threshold)
+    # Apply threshold (this is now done in the frontend, but we'll keep it here for safety)
+    intensities = np.where(intensities < threshold, 0, intensities)
 
-    peaks, _ = find_peaks(intensities, height=0)
+    # Smooth the data
+    window_length = max(3, int(len(intensities) * 0.02))  # Use 2% of data points as window length
+    smoothed_intensities = smooth_data(wavelengths, intensities, window_length)
+
+    peaks, _ = find_peaks(smoothed_intensities, height=0)
     peak_data = []
     
     for i, peak in enumerate(peaks):
-        fwhm, left_val, right_val = calculate_fwhm(wavelengths, intensities, peak)
+        fwhm, left_val, right_val = calculate_fwhm(wavelengths, smoothed_intensities, peak)
         x = wavelengths[peak]
         symmetry = determine_symmetry(left_val, right_val, x)
         peak_data.append({
             "peak": i + 1,
             "x": float(x),
-            "y": float(intensities[peak]),
+            "y": float(smoothed_intensities[peak]),
             "right_val": float(right_val - x),
             "left_val": float(x - left_val),
             "raman_band": identify_raman_band(x),
