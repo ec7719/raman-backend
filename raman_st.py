@@ -11,7 +11,8 @@ import datetime
 # --- GEMINI SETUP ---
 GEMINI_API_KEY = "AIzaSyBOW46Vs8PhbfEMt89P3kuUh5LhHrv7u4k"
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+# Reverting to a known stable model; change to 'gemini-2.0-flash-exp' if latest features are needed.
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Gemini Raman Analyzer", layout="wide", page_icon="🔬")
@@ -71,6 +72,18 @@ def identify_raman_band(x):
     if 380 <= x <= 390: return "E¹₂g (MoS₂)"
     if 400 <= x <= 412: return "A₁g (MoS₂)"
     return "Unknown"
+
+def determine_symmetry(left_val, right_val, x):
+    if right_val is None or x is None or abs(right_val - x) < 1e-10:
+        return float('inf')
+    s = (left_val - x) / (right_val - x)
+    return abs(round(s, 2))
+
+def determine_syminfo(symmetry):
+    if 0.9 <= symmetry <= 1.1:
+        return "Symmetric (likely 1L)"
+    else:
+        return "Asymmetric (likely ML)"
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -187,8 +200,17 @@ if uploaded_file is not None:
             st.caption("Detailed Peak Map")
             p_list = []
             for i in peaks_idx:
-                p_list.append({"Shift": round(shifts[i],1), "Intensity": int(smoothed[i]), "Band": identify_raman_band(shifts[i])})
-            st.dataframe(pd.DataFrame(p_list), use_container_width=True, height=200)
+                fwhm, l_val, r_val = calculate_fwhm(shifts, smoothed, i)
+                sym = determine_symmetry(l_val, r_val, shifts[i])
+                p_list.append({
+                    "Shift": round(shifts[i], 1),
+                    "Intensity": int(smoothed[i]),
+                    "FWHM": round(fwhm, 1),
+                    "Band": identify_raman_band(shifts[i]),
+                    "Sym": sym if sym != float('inf') else "N/A",
+                    "Info": determine_syminfo(sym) if sym != float('inf') else "N/A"
+                })
+            st.dataframe(pd.DataFrame(p_list), use_container_width=True, height=250)
 
         # --- GEMINI CHAT WINDOW ---
         with col_chat:

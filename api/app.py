@@ -1,46 +1,44 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 import pandas as pd
 import numpy as np
 from scipy.signal import find_peaks
 from scipy import signal
-from flask_cors import CORS
-import os
-import io
+import google.generativeai as genai
+import datetime
+from io import StringIO, BytesIO
 
 app = Flask(__name__)
 CORS(app)
 
-@app.route('/')
-def index():
-    return "Hello, World!"
+# --- GEMINI SETUP ---
+# Primary key from working React app, fallback from Streamlit
+GEMINI_API_KEY = "AIzaSyBOW46Vs8PhbfEMt89P3kuUh5LhHrv7u4k"
 
-def smooth_data(x, y, window_length):
-    if window_length < 3:
-        window_length = 3
-    if window_length % 2 == 0:
-        window_length += 1
+def get_model(api_key):
+    genai.configure(api_key=api_key)
+    # Reverting to 1.5-flash because 2.5-flash is currently causing initialization crashes and server downtime.
+    selected_model = 'gemini-1.5-flash'
+    print(f"Server initializing with STABLE model: {selected_model}")
+    return genai.GenerativeModel(selected_model)
+
+model = get_model(GEMINI_API_KEY)
+# --- UTILS ---
+def smooth_data(y, window_length):
+    if window_length < 3: window_length = 3
+    if window_length % 2 == 0: window_length += 1
     return signal.savgol_filter(y, window_length, 2)
 
 def calculate_fwhm(x, y, peak):
     half_max = y[peak] / 2.0
     left_idx = np.where(y[:peak] < half_max)[0]
     right_idx = np.where(y[peak:] < half_max)[0] + peak
-    
-    if left_idx.size == 0:
-        left_idx = 0
-    else:
-        left_idx = left_idx[-1]
-        
-    if right_idx.size == 0:
-        right_idx = len(y) - 1
-    else:
-        right_idx = right_idx[0]
-        
+    left_idx = left_idx[-1] if left_idx.size > 0 else 0
+    right_idx = right_idx[0] if right_idx.size > 0 else len(y) - 1
     fwhm = x[right_idx] - x[left_idx]
     return fwhm, x[left_idx], x[right_idx]
 
 def identify_raman_band(x):
-    """Broad band assignment based on shift ranges."""
     if 1330 <= x <= 1360: return "D Band (C)"
     if 1570 <= x <= 1590: return "G Band (C)"
     if 2680 <= x <= 2715: return "2D Band (Graphene)"
@@ -51,131 +49,228 @@ def identify_raman_band(x):
     if 400 <= x <= 412: return "A₁g (MoS₂)"
     return "Unknown"
 
-def find_symmetry(new_left_x_value, original_x_value, new_right_x_value):
-    if new_right_x_value is None or original_x_value is None:
-        return float('inf')
-    if abs(new_right_x_value - original_x_value) < 1e-10:
-        return float('inf')    
-    s = (new_left_x_value - original_x_value) / (new_right_x_value - original_x_value)
-    s = round(s, 1)
-    return abs(s)
-
 def determine_symmetry(left_val, right_val, x):
-    return find_symmetry(left_val, x, right_val)
+    if right_val is None or x is None or abs(right_val - x) < 1e-10:
+        return float('inf')
+    s = (left_val - x) / (right_val - x)
+    return abs(round(s, 2))
 
 def determine_syminfo(symmetry):
     if 0.9 <= symmetry <= 1.1:
-        return "Symmetric (likely Single Layer)"
+        return "Symmetric (likely 1L)"
     else:
-        return "Asymmetric (likely Multi-layer)"
+        return "Asymmetric (likely ML)"
 
-@app.route('/detect-peaks', methods=['POST'])
-def detect_peaks():
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    
     file = request.files['file']
-    threshold = float(request.form.get('threshold', 0))
+    threshold = float(request.form.get('threshold', 100.0))
     
-    # Read the CSV data from the file
-    file_content = file.read().decode('utf-8')
-    df = pd.read_csv(io.StringIO(file_content), header=None)
-    
-    shifts = df[0].to_numpy()
-    intensities = df[1].to_numpy()
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
 
-    # Smooth the data
-    window_length = max(3, int(len(intensities) * 0.02))
-    smoothed_intensities = smooth_data(shifts, intensities, window_length)
-
-    # Detect peaks based on threshold
-    peaks, _ = find_peaks(smoothed_intensities, height=threshold)
-    peak_data = []
-    
-    # Material Analysis Storage
-    materials_detected = []
-    
-    # Helper to find peak in range
-    def find_p(low, high):
-        best = None
-        m_int = -1
-        for p in peaks:
-            if low <= shifts[p] <= high:
-                if smoothed_intensities[p] > m_int:
-                    m_int = smoothed_intensities[p]
-                    best = p
-        return best
-
-    # 1. Graphene / Graphite Analysis
-    g_p = find_p(1570, 1590)
-    if g_p is not None:
-        g_pos = shifts[g_p]
-        g_int = smoothed_intensities[g_p]
-        strain = (g_pos - 1581) / -14.0
+    try:
+        df = pd.read_csv(file, header=None, sep=None, engine='python')
+        shifts = df[0].to_numpy()
+        intensities = df[1].to_numpy()
         
-        # Check Graphite first
-        two_d_graphite = find_p(2716, 2760)
-        if two_d_graphite:
-            ratio = smoothed_intensities[two_d_graphite] / g_int
-            if ratio < 0.5:
-                materials_detected.append({
-                    "type": "Graphite", 
-                    "strain": round(strain, 2),
-                    "2d_pos": round(shifts[two_d_graphite], 1),
-                    "ratio": round(ratio, 2)
-                })
+        # Fixed smoothing window as per user request (2%)
+        win_size = max(3, int(len(intensities) * (2.0 / 100.0)))
+        smoothed = smooth_data(intensities, win_size)
+        peaks_idx, _ = find_peaks(smoothed, height=threshold)
         
-        # Check Graphene if not Graphite
-        if not any(m["type"] == "Graphite" for m in materials_detected):
-            two_d_graphene = find_p(2680, 2715)
-            if two_d_graphene is not None:
-                ratio = smoothed_intensities[two_d_graphene] / g_int
+        # Analysis logic
+        def find_p(low, high):
+            best = None; m_int = -1
+            for p in peaks_idx:
+                if low <= shifts[p] <= high:
+                    if smoothed[p] > m_int:
+                        m_int = smoothed[p]; best = p
+            return best
+
+        findings_to_share = []
+        
+        # Carbon logic
+        g_p = find_p(1570, 1590)
+        if g_p is not None:
+            g_pos = shifts[g_p]; g_int = smoothed[g_p]
+            strain = (g_pos - 1581) / -14.0
+            dg_p = find_p(2716, 2760)
+            gn_p = find_p(2680, 2715)
+            
+            if dg_p is not None and (smoothed[dg_p]/g_int < 0.5):
+                f = f"Material: Graphite (Bulk Carbon). G-Peak: {g_pos:.1f}, 2D-Peak: {shifts[dg_p]:.1f} cm⁻¹. Ratio (I2D/IG): {smoothed[dg_p]/g_int:.2f}. Strain: {strain:.2f}%"
+                findings_to_share.append(f)
+            elif gn_p is not None:
+                ratio = smoothed[gn_p] / g_int
                 layer = "Monolayer" if ratio > 2 else "Bilayer" if ratio > 1 else "Multilayer"
-                materials_detected.append({
-                    "type": "Graphene", 
-                    "layer": layer, 
-                    "strain": round(strain, 2), 
-                    "i2d_ig": round(ratio, 2)
-                })
+                f = f"Material: Graphene. G-Peak: {g_pos:.1f}, 2D-Peak: {shifts[gn_p]:.1f} cm⁻¹. Layer: {layer} (I2D/IG: {ratio:.2f}). Strain: {strain:.2f}%"
+                d_p = find_p(1330, 1360)
+                if d_p is not None: f += f". Quality: Defects detected (ID/IG: {smoothed[d_p]/g_int:.2f}, D-Peak: {shifts[d_p]:.1f} cm⁻¹)"
+                findings_to_share.append(f)
+        
+        # WS2 & MoS2 logic
+        ws2_e = find_p(350, 362); ws2_a = find_p(415, 425)
+        if ws2_e is not None and ws2_a is not None:
+            e_pos, a_pos = shifts[ws2_e], shifts[ws2_a]
+            delta = a_pos - e_pos
+            f = f"Material: WS₂. E¹₂g: {e_pos:.1f}, A₁g: {a_pos:.1f} cm⁻¹. Layer: {'Monolayer' if delta < 65 else 'Bulk'} (Δ: {delta:.1f}). Strain: {(e_pos - 356.5) / -0.66:.2f}%"
+            findings_to_share.append(f)
 
-    # 2. WS2 Analysis
-    ws2_e = find_p(350, 362)
-    ws2_a = find_p(415, 425)
-    if ws2_e is not None and ws2_a is not None:
-        e_pos = shifts[ws2_e]
-        a_pos = shifts[ws2_a]
-        delta = a_pos - e_pos
-        strain = (e_pos - 356.5) / -0.66
-        layer = "Monolayer" if delta < 65 else "Bulk"
-        materials_detected.append({"type": "WS2", "layer": layer, "strain": round(strain, 2), "delta": round(delta, 1)})
+        mos2_e = find_p(380, 390); mos2_a = find_p(400, 412)
+        if mos2_e is not None and mos2_a is not None:
+            e_pos, a_pos = shifts[mos2_e], shifts[mos2_a]
+            delta = a_pos - e_pos
+            f = f"Material: MoS₂. E¹₂g: {e_pos:.1f}, A₁g: {a_pos:.1f} cm⁻¹. Layer: {'Monolayer' if delta < 22 else 'Bulk'} (Δ: {delta:.1f}). Strain: {(e_pos - 383) / -1.5:.2f}%"
+            findings_to_share.append(f)
 
-    # 3. MoS2 Analysis
-    mos2_e = find_p(380, 390)
-    mos2_a = find_p(400, 412)
-    if mos2_e is not None and mos2_a is not None:
-        e_pos = shifts[mos2_e]
-        a_pos = shifts[mos2_a]
-        delta = a_pos - e_pos
-        strain = (e_pos - 383) / -1.5
-        layer = "Monolayer" if delta < 22 else "Bulk"
-        materials_detected.append({"type": "MoS2", "layer": layer, "strain": round(strain, 2), "delta": round(delta, 1)})
+        # Global Symmetry Calculation
+        global_sym = "N/A"
+        global_info = "No peaks detected"
+        if len(peaks_idx) > 0:
+            # Calculate based on the highest peak
+            main_peak = peaks_idx[np.argmax(smoothed[peaks_idx])]
+            fwhm, l_val, r_val = calculate_fwhm(shifts, smoothed, main_peak)
+            sym_val = determine_symmetry(l_val, r_val, shifts[main_peak])
+            if sym_val != float('inf'):
+                global_sym = sym_val
+                global_info = determine_syminfo(sym_val)
 
-    for i, peak in enumerate(peaks):
-        fwhm, left_val, right_val = calculate_fwhm(shifts, smoothed_intensities, peak)
-        x = shifts[peak]
-        symmetry = determine_symmetry(left_val, right_val, x)
-        peak_data.append({
-            "peak": i + 1,
-            "x": float(x),
-            "y": float(smoothed_intensities[peak]),
-            "symmetry": float(symmetry),
-            "fwhm": float(fwhm),
-            "raman_band": identify_raman_band(x),
-            "sym_info": determine_syminfo(symmetry)
+        # Peak Data (Removed Sym and Info from per-peak)
+        p_list = []
+        for i in peaks_idx:
+            fwhm, l_val, r_val = calculate_fwhm(shifts, smoothed, i)
+            p_list.append({
+                "Shift": round(shifts[i], 1),
+                "Intensity": int(smoothed[i]),
+                "FWHM": round(fwhm, 1),
+                "Band": identify_raman_band(shifts[i]),
+                "xl": l_val,
+                "xr": r_val
+            })
+
+        return jsonify({
+            "shifts": shifts.tolist(),
+            "intensities": intensities.tolist(),
+            "smoothed": smoothed.tolist(),
+            "peaks": p_list,
+            "findings": findings_to_share,
+            "global_symmetry": global_sym,
+            "global_info": global_info
         })
 
-    return jsonify({
-        "peaks": peak_data,
-        "analysis": materials_detected
-    })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "No JSON data provided"}), 400
+            
+        user_input = data.get('message')
+        history = data.get('history', [])
+        findings = data.get('findings', [])
+        peaks = data.get('peaks', [])
+
+        findings_str = "; ".join([str(f) for f in findings]) if isinstance(findings, list) else str(findings)
+        peaks_str = str(peaks)
+
+        context = f"Scientific Findings: {findings_str}. Peak Data: {peaks_str}. User is asking about a Raman Spectroscopy spectrum."
+        full_prompt = f"Context: {context}\n\nUser Question: {user_input}\n\nRespond as a Raman Spectroscopy expert. Be concise and scientifically accurate."
+        
+        try:
+            response = model.generate_content(full_prompt)
+            ai_reply = response.text
+            return jsonify({"reply": ai_reply})
+        except Exception as e:
+            return jsonify({"error": f"Gemini API Error: {str(e)}"}), 500
+
+    except Exception as e:
+        print(f"CRITICAL ERROR in /chat: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
+@app.route('/report', methods=['POST'])
+def generate_report():
+    try:
+        data = request.json
+        findings = data.get('findings', [])
+        peaks = data.get('peaks', [])
+        history = data.get('history', [])
+        global_sym = data.get('global_symmetry', 'N/A')
+        global_info = data.get('global_info', 'N/A')
+        
+        findings_str = "; ".join([str(f) for f in findings])
+        peaks_str = "\n".join([f"Peak {i+1}: Shift={p['Shift']}cm-1, Int={p['Intensity']}, FWHM={p['FWHM']}, Band={p['Band']}" for i, p in enumerate(peaks)])
+        chat_str = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history])
+        
+        prompt = f"""
+        Generate a Formal Technical Raman Spectroscopy Analysis Report.
+        
+        INPUT DATA:
+        Scientific Findings: {findings_str}
+        Detected Peaks:
+        {peaks_str}
+        Global Symmetry: {global_sym} ({global_info})
+        
+        USER INTERACTION SUMMARY:
+        {chat_str}
+        
+        REQUIREMENTS:
+        1. Start with a "Technical Executive Summary" summarizing the material and its state.
+        2. Provide a "Spectral Feature Analysis" section discussing the observed peaks and the overall data symmetry.
+        3. Include an "Interaction Synthesis" section that summarizes the key technical points discussed during the AI chat.
+        4. Use a formal, objective, and expert tone.
+        5. Describe the plot characteristics as a "Visual Data Representation Summary".
+        
+        Format the response in clear Markdown.
+        """
+        
+        try:
+            response = model.generate_content(prompt)
+            formal_summary = response.text
+        except Exception as e:
+            formal_summary = f"Error generating automated summary: {str(e)}"
+
+        report_content = f"""# RAMAN SPECTROSCOPY FORMAL ANALYSIS REPORT
+Generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+{formal_summary}
+
+---
+## DATA APPENDIX
+
+### Global Data Symmetry
+- **Symmetry Ratio:** {global_sym}
+- **Interpretation:** {global_info}
+
+### Detected Peak Table
+| Rank | Shift (cm⁻¹) | Intensity (a.u.) | FWHM | Assigned Band |
+|------|--------------|-------------------|------|---------------|
+"""
+        for i, p in enumerate(peaks):
+            report_content += f"| {i+1} | {p['Shift']} | {p['Intensity']} | {p['FWHM']} | {p['Band']} |\n"
+
+        report_content += f"""
+### Raw Scientific Findings
+{chr(10).join(['- ' + f for f in findings]) if findings else 'No characteristic materials identified.'}
+
+### Communication Log
+"""
+        for m in history:
+            report_content += f"**{m['role'].upper()}**: {m['content']}\n\n"
+
+        report_content += "\n---\n*Report generated by Raman-Data-Analysis System with Gemini AI Integration.*"
+        
+        return jsonify({"report": report_content})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(debug=True, port=5000)
