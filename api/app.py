@@ -7,7 +7,7 @@ from scipy import signal
 import google.generativeai as genai
 import datetime
 from io import StringIO, BytesIO
-
+import os 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 # --- GEMINI SETUP ---
