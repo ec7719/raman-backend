@@ -9,8 +9,13 @@ import datetime
 from io import StringIO, BytesIO
 
 app = Flask(__name__)
-CORS(app)
-
+CORS(
+    app,
+    origins=[
+        "https://raman-data-analysis.onrender.com"
+    ],
+    supports_credentials=True
+)
 # --- GEMINI SETUP ---
 # Primary key from working React app, fallback from Streamlit
 GEMINI_API_KEY = "AIzaSyBOW46Vs8PhbfEMt89P3kuUh5LhHrv7u4k"
