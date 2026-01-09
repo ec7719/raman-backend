@@ -9,17 +9,7 @@ import datetime
 from io import StringIO, BytesIO
 
 app = Flask(__name__)
-CORS(
-    app,
-    resources={r"/*": {"origins": "*"}},
-    supports_credentials=True,
-    allow_all_origins=True,
-    allow_all_methods=True,
-    allow_all_headers=True,
-    allow_credentials=True,
-    allow_all_origins_regex=True,
-
-)
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 # --- GEMINI SETUP ---
 # Primary key from working React app, fallback from Streamlit
 GEMINI_API_KEY = "AIzaSyBOW46Vs8PhbfEMt89P3kuUh5LhHrv7u4k"
