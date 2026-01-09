@@ -12,7 +12,7 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 # --- GEMINI SETUP ---
 # Primary key from working React app, fallback from Streamlit
-GEMINI_API_KEY = "AIzaSyBOW46Vs8PhbfEMt89P3kuUh5LhHrv7u4k"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 def get_model(api_key):
     genai.configure(api_key=api_key)
