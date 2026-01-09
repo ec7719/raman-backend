@@ -14,7 +14,13 @@ CORS(
     origins=[
         "https://raman-data-analysis.onrender.com"
     ],
-    supports_credentials=True
+    supports_credentials=True,
+    allow_all_origins=True,
+    allow_all_methods=True,
+    allow_all_headers=True,
+    allow_credentials=True,
+    allow_all_origins_regex=True,
+
 )
 # --- GEMINI SETUP ---
 # Primary key from working React app, fallback from Streamlit
