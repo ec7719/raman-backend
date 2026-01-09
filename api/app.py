@@ -70,6 +70,10 @@ def determine_syminfo(symmetry):
     else:
         return "Asymmetric (likely ML)"
 
+@app.route('/')
+def home():
+    return "Raman Analysis API is Running"
+
 @app.route('/analyze', methods=['POST'])
 def analyze():
     if 'file' not in request.files:
