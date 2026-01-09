@@ -11,9 +11,7 @@ from io import StringIO, BytesIO
 app = Flask(__name__)
 CORS(
     app,
-    origins=[
-        "https://raman-data-analysis.onrender.com"
-    ],
+    resources={r"/*": {"origins": "*"}},
     supports_credentials=True,
     allow_all_origins=True,
     allow_all_methods=True,
