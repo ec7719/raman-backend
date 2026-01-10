@@ -110,7 +110,25 @@ class RamanPeakAnalyzer:
         """Perform comprehensive material, layer thickness, and strain analysis."""
         findings = []
         
-        # Search for key peaks with distinct ranges
+        # Determine Dominant Material First
+        self.detected_materials = []
+        
+        # Check for Carbon (G Peak is the strongest indicator)
+        g_peak = self.find_peak_in_range(1570, 1590)
+        
+        if g_peak is not None:
+                self.detected_materials = ["Carbon"]
+        else:
+            # If no Carbon, check for MoS2 / WS2 interaction
+            ws2_e_peak = self.find_peak_in_range(350, 362)
+            mos2_e_peak = self.find_peak_in_range(380, 390)
+            
+            if ws2_e_peak is not None:
+                self.detected_materials.append("WS2")
+            if mos2_e_peak is not None:
+                self.detected_materials.append("MoS2")
+
+        # Search for key peaks with distinct ranges (re-search based on context)
         g_peak = self.find_peak_in_range(1570, 1590)
         d_peak = self.find_peak_in_range(1330, 1360)
         two_d_peak_graphene = self.find_peak_in_range(2680, 2715)
@@ -123,7 +141,7 @@ class RamanPeakAnalyzer:
         mos2_a_peak = self.find_peak_in_range(400, 412)
 
         # Graphene / Graphite Analysis
-        if g_peak is not None:
+        if "Carbon" in self.detected_materials and g_peak is not None:
             g_pos = self.raman_shifts[g_peak]
             g_int = self.smoothed_intensities[g_peak]
             strain_g = (g_pos - 1581) / -14.0
@@ -145,24 +163,24 @@ class RamanPeakAnalyzer:
                 if d_peak is not None:
                     res += f"\n- Quality: Defects detected (ID/IG: {self.intensities[d_peak]/g_int:.2f})"
                 findings.append(res)
-
-        # WS2 Analysis
-        if ws2_e_peak is not None and ws2_a_peak is not None:
+        
+        # WS2 Analysis (Indented to match findings block)
+        if "WS2" in self.detected_materials and ws2_e_peak is not None and ws2_a_peak is not None:
             e_pos = self.raman_shifts[ws2_e_peak]
             a_pos = self.raman_shifts[ws2_a_peak]
             delta = a_pos - e_pos
             strain_ws2 = (e_pos - 356.5) / -0.66
             layer = "Monolayer" if delta < 65 else "Bulk/Multilayer"
-            findings.append(f"Material: WS₂\n- E¹₂g: {e_pos:.1f}, A₁g: {a_pos:.1f} cm⁻¹\n- Layer: {layer} (Δ: {delta:.1f} cm⁻¹)\n- Strain: {strain_ws2:.2f}%")
+            findings.append(f"Material: WS2\n- E2g: {e_pos:.1f}, A1g: {a_pos:.1f} cm-1\n- Layer: {layer} (Delta: {delta:.1f} cm-1)\n- Strain: {strain_ws2:.2f}%")
 
         # MoS2 Analysis
-        if mos2_e_peak is not None and mos2_a_peak is not None:
+        if "MoS2" in self.detected_materials and mos2_e_peak is not None and mos2_a_peak is not None:
             e_pos = self.raman_shifts[mos2_e_peak]
             a_pos = self.raman_shifts[mos2_a_peak]
             delta = a_pos - e_pos
             strain_mos2 = (e_pos - 383) / -1.5
             layer = "Monolayer" if delta < 22 else "Bulk/Multilayer"
-            findings.append(f"Material: MoS₂\n- E¹₂g: {e_pos:.1f}, A₁g: {a_pos:.1f} cm⁻¹\n- Layer: {layer} (Δ: {delta:.1f} cm⁻¹)\n- Strain: {strain_mos2:.2f}%")
+            findings.append(f"Material: MoS2\n- E2g: {e_pos:.1f}, A1g: {a_pos:.1f} cm-1\n- Layer: {layer} (Delta: {delta:.1f} cm-1)\n- Strain: {strain_mos2:.2f}%")
 
         if findings:
             report_text = "\n\n---\n\n".join(findings)
@@ -209,7 +227,7 @@ class RamanPeakAnalyzer:
         for i, peak in enumerate(self.peaks):
             fwhm, left_val, right_val = calculate_fwhm(self.raman_shifts, self.smoothed_intensities, peak)
             shift = self.raman_shifts[peak]
-            band = identify_raman_band(shift)
+            band = identify_raman_band(shift, valid_materials=getattr(self, 'detected_materials', None))
             symmetry = determine_symmetry(left_val, right_val, shift)
             
             self.tree.insert("", "end", values=(
@@ -255,16 +273,22 @@ def calculate_fwhm(x, y, peak):
     fwhm = x[right_idx] - x[left_idx]
     return fwhm, x[left_idx], x[right_idx]
 
-def identify_raman_band(x):
+def identify_raman_band(x, valid_materials=None):
     """Broad band assignment based on shift ranges."""
-    if 1330 <= x <= 1360: return "D Band (C)"
-    if 1570 <= x <= 1590: return "G Band (C)"
-    if 2680 <= x <= 2715: return "2D Band (Graphene)"
-    if 2716 <= x <= 2760: return "2D Band (Graphite)"
-    if 350 <= x <= 362: return "E¹₂g (WS₂)"
-    if 415 <= x <= 425: return "A₁g (WS₂)"
-    if 380 <= x <= 390: return "E¹₂g (MoS₂)"
-    if 400 <= x <= 412: return "A₁g (MoS₂)"
+    if valid_materials is None or "Carbon" in valid_materials:
+        if 1330 <= x <= 1360: return "D Band (C)"
+        if 1570 <= x <= 1590: return "G Band (C)"
+        if 2680 <= x <= 2715: return "2D Band (Graphene)"
+        if 2716 <= x <= 2760: return "2D Band (Graphite)"
+    
+    if valid_materials is None or "WS2" in valid_materials:
+        if 350 <= x <= 362: return "E¹₂g (WS₂)"
+        if 415 <= x <= 425: return "A₁g (WS₂)"
+    
+    if valid_materials is None or "MoS2" in valid_materials:
+        if 380 <= x <= 390: return "E¹₂g (MoS₂)"
+        if 400 <= x <= 412: return "A₁g (MoS₂)"
+        
     return "Unknown"
 
 def determine_symmetry(left_val, right_val, x):

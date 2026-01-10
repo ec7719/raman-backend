@@ -62,15 +62,20 @@ def calculate_fwhm(x, y, peak):
     fwhm = x[right_idx] - x[left_idx]
     return fwhm, x[left_idx], x[right_idx]
 
-def identify_raman_band(x):
-    if 1330 <= x <= 1360: return "D Band (C)"
-    if 1570 <= x <= 1590: return "G Band (C)"
-    if 2680 <= x <= 2715: return "2D Band (Graphene)"
-    if 2716 <= x <= 2760: return "2D Band (Graphite)"
-    if 350 <= x <= 362: return "E¹₂g (WS₂)"
-    if 415 <= x <= 425: return "A₁g (WS₂)"
-    if 380 <= x <= 390: return "E¹₂g (MoS₂)"
-    if 400 <= x <= 412: return "A₁g (MoS₂)"
+def identify_raman_band(x, valid_materials=None):
+    if valid_materials is None or "Carbon" in valid_materials:
+        if 1330 <= x <= 1360: return "D Band (C)"
+        if 1570 <= x <= 1590: return "G Band (C)"
+        if 2680 <= x <= 2715: return "2D Band (Graphene)"
+        if 2716 <= x <= 2760: return "2D Band (Graphite)"
+    
+    if valid_materials is None or "WS2" in valid_materials:
+        if 350 <= x <= 362: return "E¹₂g (WS₂)"
+        if 415 <= x <= 425: return "A₁g (WS₂)"
+    
+    if valid_materials is None or "MoS2" in valid_materials:
+        if 380 <= x <= 390: return "E¹₂g (MoS₂)"
+        if 400 <= x <= 412: return "A₁g (MoS₂)"
     return "Unknown"
 
 def determine_symmetry(left_val, right_val, x):
@@ -154,12 +159,23 @@ if uploaded_file is not None:
                         if smoothed[p] > m_int:
                             m_int = smoothed[p]; best = p
                 return best
+            
+            # Determine Dominant Material
+            detected_materials = []
+            g_p = find_p(1570, 1590)
+            
+            if g_p:
+                 detected_materials = ["Carbon"]
+            else:
+                ws2_e = find_p(350, 362)
+                mos2_e = find_p(380, 390)
+                if ws2_e: detected_materials.append("WS2")
+                if mos2_e: detected_materials.append("MoS2")
 
             findings_md = []
             
             # Carbon logic
-            g_p = find_p(1570, 1590)
-            if g_p:
+            if "Carbon" in detected_materials and g_p:
                 g_pos = shifts[g_p]; g_int = smoothed[g_p]
                 strain = (g_pos - 1581) / -14.0
                 dg_p = find_p(2716, 2760)
@@ -176,18 +192,21 @@ if uploaded_file is not None:
                     if d_p: f += f"\n- Quality: Defects detected (ID/IG: {smoothed[d_p]/g_int:.2f})"
                     findings_md.append(f)
             
-            # WS2 & MoS2 logic
-            ws2_e = find_p(350, 362); ws2_a = find_p(415, 425)
-            if ws2_e and ws2_a:
-                e_pos, a_pos = shifts[ws2_e], shifts[ws2_a]
-                delta = a_pos - e_pos
-                findings_md.append(f"**Material: WS₂**\n- E¹₂g: {e_pos:.1f}, A₁g: {a_pos:.1f} cm⁻¹\n- Layer: {'Monolayer' if delta < 65 else 'Bulk'} (Δ: {delta:.1f})\n- Strain: {(e_pos - 356.5) / -0.66:.2f}%")
+            # WS2 Logic
+            if "WS2" in detected_materials:
+                ws2_e = find_p(350, 362); ws2_a = find_p(415, 425)
+                if ws2_e and ws2_a:
+                    e_pos, a_pos = shifts[ws2_e], shifts[ws2_a]
+                    delta = a_pos - e_pos
+                    findings_md.append(f"**Material: WS2**\n- E2g: {e_pos:.1f}, A1g: {a_pos:.1f} cm-1\n- Layer: {'Monolayer' if delta < 65 else 'Bulk'} (Delta: {delta:.1f})\n- Strain: {(e_pos - 356.5) / -0.66:.2f}%")
 
-            mos2_e = find_p(380, 390); mos2_a = find_p(400, 412)
-            if mos2_e and mos2_a:
-                e_pos, a_pos = shifts[mos2_e], shifts[mos2_a]
-                delta = a_pos - e_pos
-                findings_md.append(f"**Material: MoS₂**\n- E¹₂g: {e_pos:.1f}, A₁g: {a_pos:.1f} cm⁻¹\n- Layer: {'Monolayer' if delta < 22 else 'Bulk'} (Δ: {delta:.1f})\n- Strain: {(e_pos - 383) / -1.5:.2f}%")
+            # MoS2 Logic
+            if "MoS2" in detected_materials:
+                mos2_e = find_p(380, 390); mos2_a = find_p(400, 412)
+                if mos2_e and mos2_a:
+                    e_pos, a_pos = shifts[mos2_e], shifts[mos2_a]
+                    delta = a_pos - e_pos
+                    findings_md.append(f"**Material: MoS2**\n- E2g: {e_pos:.1f}, A1g: {a_pos:.1f} cm-1\n- Layer: {'Monolayer' if delta < 22 else 'Bulk'} (Delta: {delta:.1f})\n- Strain: {(e_pos - 383) / -1.5:.2f}%")
 
             if findings_md:
                 for f in findings_md:
@@ -206,7 +225,7 @@ if uploaded_file is not None:
                     "Shift": round(shifts[i], 1),
                     "Intensity": int(smoothed[i]),
                     "FWHM": round(fwhm, 1),
-                    "Band": identify_raman_band(shifts[i]),
+                    "Band": identify_raman_band(shifts[i], valid_materials=detected_materials),
                     "Sym": sym if sym != float('inf') else "N/A",
                     "Info": determine_syminfo(sym) if sym != float('inf') else "N/A"
                 })
