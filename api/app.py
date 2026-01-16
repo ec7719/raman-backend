@@ -43,10 +43,10 @@ def identify_raman_band(x, valid_materials=None):
     if valid_materials is None or "Carbon" in valid_materials:
         if 1330 <= x <= 1360: return "D Band (C)"
         if 1570 <= x <= 1590: return "G Band (C)"
-        if 2680 <= x <= 2715: return "2D Band (Graphene)"
-        if 2716 <= x <= 2760: return "2D Band (Graphite)"
+        if 2680 <= x <= 2760: return "2D Band"
     
     if valid_materials is None or "WS2" in valid_materials:
+        if 170 <= x <= 185: return "2LA (WS₂)"
         if 350 <= x <= 362: return "E¹₂g (WS₂)"
         if 415 <= x <= 425: return "A₁g (WS₂)"
     
@@ -105,64 +105,75 @@ def analyze():
         findings_to_share = []
         detected_materials = []
 
-        # 1. Determine Dominant Material First
-        # Check for Carbon (G Peak is the strongest indicator)
+        # 1. Material Identification
         g_p = find_p(1570, 1590)
+        d2_p = find_p(2680, 2760)
         
-        if g_p is not None:
-             detected_materials = ["Carbon"]
-        else:
-            # If no Carbon, check for MoS2 / WS2 interaction
-            # We can check specific peaks to see which is present
-            ws2_e = find_p(350, 362)
-            mos2_e = find_p(380, 390)
-            
-            if ws2_e is not None:
-                detected_materials.append("WS2")
-            if mos2_e is not None:
-                detected_materials.append("MoS2")
+        ws2_e = find_p(350, 362)
+        ws2_a = find_p(415, 425)
         
-        # If nothing specific detected, we might want to allow all or none. 
-        # But per requirements, "no one materials peaks should be identified in another".
-        # If detected_materials is empty, we leave it empty (Unknown).
+        mos2_e = find_p(380, 390)
+        mos2_a = find_p(400, 412)
 
-        # 2. Generate Findings based ONLY on detected materials
-        
-        # Carbon Logic
+        if g_p is not None and d2_p is not None:
+            detected_materials.append("Carbon")
+        if ws2_e is not None and ws2_a is not None:
+            detected_materials.append("WS2")
+        if mos2_e is not None and mos2_a is not None:
+            detected_materials.append("MoS2")
+
+        # 2. Layer Classification Logic
+        # A. Carbon (Graphene/Graphite)
         if "Carbon" in detected_materials:
-            g_pos = shifts[g_p]; g_int = smoothed[g_p]
-            strain = (g_pos - 1581) / -14.0
-            dg_p = find_p(2716, 2760)
-            gn_p = find_p(2680, 2715)
+            g_int = smoothed[g_p]
+            d2_int = smoothed[d2_p]
+            ratio = d2_int / g_int
             
-            if dg_p is not None and (smoothed[dg_p]/g_int < 0.5):
-                f = f"Material: Graphite (Bulk Carbon). G-Peak: {g_pos:.1f}, 2D-Peak: {shifts[dg_p]:.1f} cm⁻¹. Ratio (I2D/IG): {smoothed[dg_p]/g_int:.2f}. Strain: {strain:.2f}%"
-                findings_to_share.append(f)
-            elif gn_p is not None:
-                ratio = smoothed[gn_p] / g_int
-                layer = "Monolayer" if ratio > 2 else "Bilayer" if ratio > 1 else "Multilayer"
-                f = f"Material: Graphene. G-Peak: {g_pos:.1f}, 2D-Peak: {shifts[gn_p]:.1f} cm⁻¹. Layer: {layer} (I2D/IG: {ratio:.2f}). Strain: {strain:.2f}%"
-                d_p = find_p(1330, 1360)
-                if d_p is not None: f += f". Quality: Defects detected (ID/IG: {smoothed[d_p]/g_int:.2f}, D-Peak: {shifts[d_p]:.1f} cm⁻¹)"
-                findings_to_share.append(f)
+            # Symmetry Check for 2D Peak
+            fwhm_2d, l_2d, r_2d = calculate_fwhm(shifts, smoothed, d2_p)
+            sym_2d = determine_symmetry(l_2d, r_2d, shifts[d2_p])
+            is_symmetric = 0.9 <= sym_2d <= 1.1
+            
+            material_type = "Graphite" if ratio < 0.5 else "Graphene"
+            
+            if ratio < 0.5:
+                layer_info = "Bulk (Graphite)"
+            else:
+                # Graphene Layer Determination STRICTLY by symmetry
+                layer_info = "Monolayer (1L)" if is_symmetric else "Multilayer"
 
-        # WS2 Logic
+            findings_to_share.append(f"Material: {material_type}. Bands: G, 2D. Ratio (I2D/IG): {ratio:.2f}. Symmetry (2D): {'Symmetric' if is_symmetric else 'Asymmetric'} ({sym_2d:.2f}). Layer: {layer_info}.")
+
+        # B. WS2
         if "WS2" in detected_materials:
-            ws2_e = find_p(350, 362); ws2_a = find_p(415, 425)
-            if ws2_e is not None and ws2_a is not None:
-                e_pos, a_pos = shifts[ws2_e], shifts[ws2_a]
-                delta = a_pos - e_pos
-                f = f"Material: WS2. E2g: {e_pos:.1f}, A1g: {a_pos:.1f} cm-1. Layer: {'Monolayer' if delta < 65 else 'Bulk'} (Delta: {delta:.1f}). Strain: {(e_pos - 356.5) / -0.66:.2f}%"
-                findings_to_share.append(f)
+            ws2_2la = find_p(170, 185)
+            if ws2_2la is not None:
+                r_ws2 = smoothed[ws2_2la] / smoothed[ws2_a]
+                if r_ws2 > 4.0:
+                    layer_ws2 = "Single-layer (Monolayer)"
+                elif 2.0 < r_ws2 < 4.0:
+                    layer_ws2 = "Multi-layer"
+                else:
+                    layer_ws2 = "Bulk"
+                findings_to_share.append(f"Material: WS2. Bands: E¹₂g, A₁g, 2LA. Ratio (I2LA/IA1g): {r_ws2:.2f}. Layer: {layer_ws2}.")
+            else:
+                findings_to_share.append(f"Material: WS2. Bands: E¹₂g, A₁g. 2LA peak not detected for ratio calculation.")
 
-        # MoS2 Logic
+        # C. MoS2
         if "MoS2" in detected_materials:
-            mos2_e = find_p(380, 390); mos2_a = find_p(400, 412)
-            if mos2_e is not None and mos2_a is not None:
-                e_pos, a_pos = shifts[mos2_e], shifts[mos2_a]
-                delta = a_pos - e_pos
-                f = f"Material: MoS2. E2g: {e_pos:.1f}, A1g: {a_pos:.1f} cm-1. Layer: {'Monolayer' if delta < 22 else 'Bulk'} (Delta: {delta:.1f}). Strain: {(e_pos - 383) / -1.5:.2f}%"
-                findings_to_share.append(f)
+            e_pos, a_pos = shifts[mos2_e], shifts[mos2_a]
+            delta = a_pos - e_pos
+            
+            # Monolayer: E ~ 384, A ~ 403 (Distance ~ 19)
+            # Bulk: E ~ 382, A ~ 407 (Distance ~ 25)
+            if (383 <= e_pos <= 385) and (402 <= a_pos <= 404) and (18 <= delta <= 20):
+                layer_mos2 = "Monolayer (1L)"
+            elif (381 <= e_pos <= 383) and (406 <= a_pos <= 408) and (24 <= delta <= 26):
+                layer_mos2 = "Bulk"
+            else:
+                layer_mos2 = "Multi-layer"
+            
+            findings_to_share.append(f"Material: MoS2. Bands: E¹₂g: {e_pos:.1f}, A₁g: {a_pos:.1f}. Distance: {delta:.1f}. Layer: {layer_mos2}.")
 
         # Global Symmetry Calculation
         global_sym = "N/A"
