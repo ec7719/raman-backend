@@ -17,7 +17,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 def get_model(api_key):
     genai.configure(api_key=api_key)
     # Reverting to 1.5-flash because 2.5-flash is currently causing initialization crashes and server downtime.
-    selected_model = 'gemini-2.5-flash'
+    selected_model = 'gemini-1.5-flash'
     print(f"Server initializing with STABLE model: {selected_model}")
     return genai.GenerativeModel(selected_model)
 
@@ -46,8 +46,8 @@ def identify_raman_band(x, valid_materials=None):
         if 2680 <= x <= 2760: return "2D Band"
     
     if valid_materials is None or "WS2" in valid_materials:
-        if 170 <= x <= 185: return "2LA (WS₂)"
-        if 350 <= x <= 362: return "E¹₂g (WS₂)"
+        if 345 <= x <= 355: return "2LA (WS₂)"
+        if 355 <= x <= 365: return "E¹₂g (WS₂)"
         if 415 <= x <= 425: return "A₁g (WS₂)"
     
     if valid_materials is None or "MoS2" in valid_materials:
@@ -118,9 +118,26 @@ def analyze():
         if g_p is not None and d2_p is not None:
             detected_materials.append("Carbon")
         if ws2_e is not None and ws2_a is not None:
-            detected_materials.append("WS2")
+            # Check if these are real peaks or just noise
+            if smoothed[ws2_e] > threshold and smoothed[ws2_a] > threshold:
+                detected_materials.append("WS2")
         if mos2_e is not None and mos2_a is not None:
-            detected_materials.append("MoS2")
+            # Check if these are real peaks or just noise
+            if smoothed[mos2_e] > threshold and smoothed[mos2_a] > threshold:
+                detected_materials.append("MoS2")
+
+        # Refinement: If multiple materials are detected, keep only the one with the strongest average peak intensity
+        if len(detected_materials) > 1:
+            material_strengths = {}
+            if "Carbon" in detected_materials:
+                material_strengths["Carbon"] = (smoothed[g_p] + smoothed[d2_p]) / 2
+            if "WS2" in detected_materials:
+                material_strengths["WS2"] = (smoothed[ws2_e] + smoothed[ws2_a]) / 2
+            if "MoS2" in detected_materials:
+                material_strengths["MoS2"] = (smoothed[mos2_e] + smoothed[mos2_a]) / 2
+            
+            dominant_material = max(material_strengths, key=material_strengths.get)
+            detected_materials = [dominant_material]
 
         # 2. Layer Classification Logic
         # A. Carbon (Graphene/Graphite)
@@ -146,7 +163,7 @@ def analyze():
 
         # B. WS2
         if "WS2" in detected_materials:
-            ws2_2la = find_p(170, 185)
+            ws2_2la = find_p(345, 355)
             if ws2_2la is not None:
                 r_ws2 = smoothed[ws2_2la] / smoothed[ws2_a]
                 if r_ws2 > 4.0:
