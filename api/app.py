@@ -17,7 +17,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 def get_model(api_key):
     genai.configure(api_key=api_key)
     # Reverting to 1.5-flash because 2.5-flash is currently causing initialization crashes and server downtime.
-    selected_model = 'gemini-1.5-flash'
+    selected_model = 'gemini-2.5-flash'
     print(f"Server initializing with STABLE model: {selected_model}")
     return genai.GenerativeModel(selected_model)
 
